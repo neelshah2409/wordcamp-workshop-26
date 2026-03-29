@@ -2,7 +2,7 @@
 
 > **WordCamp Asia · 90-minute Workshop**  
 > Speaker: Neel Shah — Developer Advocate, StackGen  
-> Stack: Terraform · AWS EC2 · Ubuntu 22.04 · LEMP · WP-CLI
+> Stack: Terraform · AWS EC2 · Ubuntu 22.04 · Apache2 · libapache2-mod-php · MySQL · WP-CLI
 
 ---
 
@@ -77,9 +77,9 @@ You need an IAM user with **AmazonEC2FullAccess** and **AmazonVPCFullAccess** po
 ### Option A — Environment variables (recommended for workshops)
 
 ```bash
-export AWS_ACCESS_KEY_ID=" "
-export AWS_SECRET_ACCESS_KEY=" "
-export AWS_DEFAULT_REGION=" "
+export AWS_ACCESS_KEY_ID=""
+export AWS_SECRET_ACCESS_KEY=""
+export AWS_DEFAULT_REGION=""
 ```
 
 ### Option B — AWS CLI configure
@@ -102,8 +102,8 @@ aws sts get-caller-identity
 Expected output:
 ```json
 {
-    "UserId": " ",
-    "Account": " ",
+    "UserId": "AIDIODR4TAW7CSEXAMPLE",
+    "Account": "123456789012",
     "Arn": "arn:aws:iam::123456789012:user/your-username"
 }
 ```
@@ -169,7 +169,7 @@ Fill in your values:
 ```hcl
 project      = "wp-workshop"
 environment  = "dev"
-aws_region   = "ap-southeast-1"
+aws_region   = "ap-south-1"
 
 # Your public IP — format: x.x.x.x/32
 your_ip      = "203.0.113.42/32"
@@ -351,8 +351,8 @@ On the server:
 
 ```bash
 # Check all three services are running
-sudo systemctl is-active nginx php8.2-fpm mysql
-# Expected: active active active
+sudo systemctl is-active apache2 mysql
+# Expected: active active
 
 # Test WordPress responds
 curl -sI http://localhost | head -3
@@ -419,23 +419,30 @@ sudo -u www-data wp user list \
   --path=/var/www/wordpress
 ```
 
-### Nginx
+### Apache2
 
 ```bash
 # Test config syntax before reloading
-sudo nginx -t
+sudo apache2ctl configtest
 
 # Reload config (zero downtime)
-sudo systemctl reload nginx
+sudo systemctl reload apache2
 
 # Full restart
-sudo systemctl restart nginx
+sudo systemctl restart apache2
 
 # View access log
-sudo tail -f /var/log/nginx/access.log
+sudo tail -f /var/log/apache2/wordpress-access.log
 
 # View error log
-sudo tail -f /var/log/nginx/error.log
+sudo tail -f /var/log/apache2/wordpress-error.log
+
+# List enabled modules
+apache2ctl -M | grep -E "php|rewrite|headers"
+
+# Enable / disable a module
+sudo a2enmod rewrite
+sudo a2dismod php8.1   # disable older version if present
 ```
 
 ### MySQL
@@ -454,11 +461,19 @@ EXIT;
 ### PHP
 
 ```bash
-# Restart PHP-FPM after php.ini changes
-sudo systemctl restart php8.2-fpm
+# Restart Apache after php.ini changes (no separate PHP-FPM process)
+sudo systemctl restart apache2
+
+# Check which PHP version Apache is using
+php -v
+apache2ctl -M | grep php
+
+# Edit the apache2 SAPI php.ini (not fpm)
+sudo nano /etc/php/8.2/apache2/php.ini
+# After editing, always restart Apache:
+sudo systemctl restart apache2
 
 # Check PHP version and key modules
-php -v
 php -m | grep -E "mysql|gd|curl|mbstring"
 ```
 
@@ -533,7 +548,7 @@ terraform apply
 | `InvalidKeyPair.Duplicate` | Key pair already exists in AWS | `aws ec2 delete-key-pair --key-name wp-workshop-key` then recreate |
 | SSH `Connection refused` | Instance still booting | Wait 30 seconds and retry |
 | SSH `Permission denied (publickey)` | Wrong key or bad permissions | `chmod 400 ~/.ssh/wp-workshop-key.pem` |
-| `502 Bad Gateway` | PHP-FPM not running | `sudo systemctl restart php8.2-fpm` |
+| `502 Bad Gateway` / blank page | Apache or PHP mod not running | `sudo systemctl restart apache2` |
 | `No valid credential sources found` | Terraform can't see AWS creds | `export AWS_ACCESS_KEY_ID=...` and `export AWS_SECRET_ACCESS_KEY=...` |
 | `wc -c` shows 0 bytes on .pem | Key creation failed (creds error) | Fix creds first, then delete and recreate the key pair |
 | WP install page instead of site | Provision script hasn't run yet | SSH in and run `sudo bash ~/provision-wordpress.sh` |
@@ -586,7 +601,7 @@ wp-aws-terraform/
         ├── variables.tf
         ├── outputs.tf
         └── scripts/
-            └── bootstrap.sh         # Runs on first boot: installs Nginx, PHP 8.2, MySQL, WP-CLI
+            └── bootstrap.sh         # Runs on first boot: installs Apache2, libapache2-mod-php, MySQL
 ```
 
 ---
