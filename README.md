@@ -16,13 +16,6 @@
 6. [Terraform: Provision Infrastructure](#6-terraform-provision-infrastructure)
 7. [Connect to Your Server](#7-connect-to-your-server)
 8. [Watch the Bootstrap Log](#8-watch-the-bootstrap-log)
-9. [Deploy WordPress with WP-CLI](#9-deploy-wordpress-with-wp-cli)
-10. [Verify Everything Works](#10-verify-everything-works)
-11. [Useful Day-of Commands](#11-useful-day-of-commands)
-12. [Tear Down](#12-tear-down)
-13. [Troubleshooting](#13-troubleshooting)
-14. [Repo Structure](#14-repo-structure)
-
 ---
 
 ## 1. Prerequisites
@@ -129,7 +122,10 @@ sudo rm -f ~/.ssh/wp-workshop-key.pem
 aws ec2 create-key-pair \
   --key-name wp-workshop-key \
   --query 'KeyMaterial' \
-  --output text > ~/.ssh/wp-workshop-key.pem
+  --output text > wp-workshop-key.pem
+
+sudo mv wp-workshop-key.pem ~/.ssh/wp-workshop-key.pem
+sudo chown $(whoami) ~/.ssh/wp-workshop-key.pem
 
 # Lock down permissions — SSH refuses keys that are too open
 chmod 400 ~/.ssh/wp-workshop-key.pem
@@ -182,7 +178,7 @@ instance_type    = "t3.micro"
 root_volume_size = 20
 
 # Ubuntu 22.04 LTS in ap-southeast-1
-ami_id = "ami-0df7a207adb9748c7"
+ami_id = "ami-05d2d839d4f73aafb"
 ```
 
 > ⚠️ `terraform.tfvars` is in `.gitignore` — never commit it (it contains your IP)
@@ -298,247 +294,128 @@ Press `Ctrl+C` to stop tailing, then exit:
 ```bash
 exit
 ```
+---
+Once AWS infra is set up, create an IAM rule named github_actions with the following policies:
+- AmazonEC2FullAccess
+- AmazonSSMFullAccess
+- AmazonSSMManagedInstanceCore
 
+Go to the instance, navigate to Networking, modify the IAM role, and add the github_actions role to it.
+
+Google Doc Link: https://docs.google.com/document/d/1z5emoGWLfU0HCTDZXoXy8nuEUomIuArqQsXOUMbJoVE/edit?usp=sharing
 ---
 
-## 9. Deploy WordPress with WP-CLI
 
-Back on your **local machine**, copy the provisioning script:
-
-```bash
-scp -i ~/.ssh/wp-workshop-key.pem \
-  scripts/provision-wordpress.sh \
-  ubuntu@$(terraform output -raw instance_public_ip):~
-```
-
-SSH in and run it:
+## 9. Setup the EC2 instance 
 
 ```bash
-ssh -i ~/.ssh/wp-workshop-key.pem ubuntu@$(terraform output -raw instance_public_ip)
+#!/bin/bash
 
-sudo bash ~/provision-wordpress.sh
-```
+# Exit on error
+set -e
 
-Watch the 7-step output:
+echo "Updating system..."
+sudo apt update -y
+sudo apt upgrade -y
 
-```
------ Step 1: Download WordPress -----
------ Step 2: Create wp-config.php -----
------ Step 3: Run WordPress install -----
------ Step 4: Plugins -----
-  Installing plugin: wordpress-seo
-  Installing plugin: woocommerce
-  Installing plugin: wordfence
-  Installing plugin: w3-total-cache
-  Installing plugin: updraftplus
------ Step 5: Theme -----
------ Step 6: Settings & sample content -----
------ Step 7: File permissions -----
+echo "Installing Apache..."
+sudo apt install apache2 -y
+sudo systemctl enable apache2
+sudo systemctl start apache2
 
-===== WordPress provisioning completed =====
+echo "Installing PHP and extensions..."
+sudo apt install -y php php-mysql php-cli php-curl php-gd php-mbstring php-xml php-xmlrpc php-soap php-intl php-zip libapache2-mod-php
 
-  Site URL:  http://x.x.x.x
-  Admin URL: http://x.x.x.x/wp-admin
-  Username:  admin
-  Password:  W0rdCamp2025!
-```
-
----
-
-## 10. Verify Everything Works
-
-On the server:
-
-```bash
-# Check all three services are running
-sudo systemctl is-active apache2 mysql
-# Expected: active active
-
-# Test WordPress responds
-curl -sI http://localhost | head -3
-# Expected: HTTP/1.1 200 OK
-```
-
-On your local machine:
-
-```bash
-# Open in browser — macOS
-open $(terraform output -raw site_url)
-
-# Open in browser — Linux
-xdg-open $(terraform output -raw site_url)
-
-# Or just print the URL and paste it
-terraform output -raw wp_admin_url
-# → http://x.x.x.x/wp-admin
-# Username: admin  |  Password: W0rdCamp2025!
-```
-
-> ⚠️ Change the admin password immediately after first login
-
----
-
-## 11. Useful Day-of Commands
-
-### WP-CLI — run on the server
-
-```bash
-# List all installed plugins
-sudo -u www-data wp plugin list --path=/var/www/wordpress
-
-# Install and activate a plugin
-sudo -u www-data wp plugin install contact-form-7 --activate \
-  --path=/var/www/wordpress
-
-# Deactivate a plugin
-sudo -u www-data wp plugin deactivate wordfence \
-  --path=/var/www/wordpress
-
-# List all themes
-sudo -u www-data wp theme list --path=/var/www/wordpress
-
-# Create a new user
-sudo -u www-data wp user create editor editor@example.com \
-  --role=editor \
-  --path=/var/www/wordpress
-
-# Update the site title
-sudo -u www-data wp option update blogname "My New Title" \
-  --path=/var/www/wordpress
-
-# Export the database
-sudo -u www-data wp db export backup.sql \
-  --path=/var/www/wordpress
-
-# Check WordPress version
-sudo -u www-data wp core version \
-  --path=/var/www/wordpress
-
-# List all users
-sudo -u www-data wp user list \
-  --path=/var/www/wordpress
-```
-
-### Apache2
-
-```bash
-# Test config syntax before reloading
-sudo apache2ctl configtest
-
-# Reload config (zero downtime)
-sudo systemctl reload apache2
-
-# Full restart
+echo "Restarting Apache..."
 sudo systemctl restart apache2
 
-# View access log
-sudo tail -f /var/log/apache2/wordpress-access.log
+echo "Installing MySQL Server..."
+sudo apt install mysql-server -y
+sudo systemctl enable mysql
+sudo systemctl start mysql
 
-# View error log
-sudo tail -f /var/log/apache2/wordpress-error.log
+# -----------------------------
+# MySQL Configuration
+# -----------------------------
 
-# List enabled modules
-apache2ctl -M | grep -E "php|rewrite|headers"
+DB_NAME="wordpress_db"
+DB_USER="wp_user"
+DB_PASSWORD="StrongPassword123!"
 
-# Enable / disable a module
-sudo a2enmod rewrite
-sudo a2dismod php8.1   # disable older version if present
-```
+echo "Configuring MySQL..."
 
-### MySQL
+sudo mysql <<EOF
+ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'RootPassword123!';
+FLUSH PRIVILEGES;
 
-```bash
-# Log in as root
-sudo mysql
+CREATE DATABASE ${DB_NAME} DEFAULT CHARACTER SET utf8 COLLATE utf8_unicode_ci;
 
-# Inside MySQL
-SHOW DATABASES;
-USE wordpress;
-SHOW TABLES;
+CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';
+GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
+
+FLUSH PRIVILEGES;
 EXIT;
-```
+EOF
 
-### PHP
+echo "MySQL setup completed."
 
-```bash
-# Restart Apache after php.ini changes (no separate PHP-FPM process)
+# -----------------------------
+# Apache Configuration for WordPress
+# -----------------------------
+
+echo "Enabling Apache rewrite module..."
+sudo a2enmod rewrite
+
+echo "Updating Apache config..."
+sudo sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
+
 sudo systemctl restart apache2
 
-# Check which PHP version Apache is using
-php -v
-apache2ctl -M | grep php
+# -----------------------------
+# Permissions
+# -----------------------------
 
-# Edit the apache2 SAPI php.ini (not fpm)
-sudo nano /etc/php/8.2/apache2/php.ini
-# After editing, always restart Apache:
+echo "Setting permissions..."
+sudo chown -R www-data:www-data /var/www/html
+sudo chmod -R 755 /var/www/html
+
+echo "--------------------------------------"
+echo "Installation Completed!"
+echo "--------------------------------------"
+echo "Database Name: ${DB_NAME}"
+echo "Database User: ${DB_USER}"
+echo "Database Password: ${DB_PASSWORD}"
+echo "MySQL Root Password: RootPassword123!"
+echo "--------------------------------------"
+```
+Run the script:
+
+```bash
+chmod +x setup.sh
+
+./setup.sh
+```
+## 10. Github Actions
+
+```
+#!/bin/bash
+
+sudo apt update -y
+sudo apt install -y git
+
+sudo rm -rf /var/www/html/*
+
+sudo git clone https://github.com/Jigneshyp/gitpipeline_wordpress.git /var/www/html/
+
 sudo systemctl restart apache2
 
-# Check PHP version and key modules
-php -m | grep -E "mysql|gd|curl|mbstring"
+echo "Done!"
 ```
-
-### System health
-
-```bash
-# Disk space
-df -h
-
-# Memory
-free -h
-
-# Full bootstrap log
-sudo cat /var/log/bootstrap.log
-
-# Full WordPress provision log
-sudo cat /var/log/provision-wordpress.log
 ```
-
-### Terraform state & debugging
-
-```bash
-# Show current state summary
-terraform show
-
-# List all resources
-terraform state list
-
-# Inspect a specific resource
-terraform state show aws_instance.wordpress
-terraform state show aws_eip.wordpress
-
-# Validate config syntax (no AWS calls)
-terraform validate
-
-# Auto-format all .tf files
-terraform fmt
+chmod +x gitclone.sh
+./gitclone.sh
 ```
-
----
-
-## 12. Tear Down
-
-```bash
-# Destroys ALL 7 resources — VPC, EC2, EIP, everything
-terraform destroy
-# Type 'yes' when prompted
-# Takes ~30 seconds
-```
-
-Expected:
-```
-Destroy complete! Resources: 7 destroyed.
-```
-
-Your `.pem` file and `terraform.tfvars` remain locally. To re-provision from scratch:
-
-```bash
-terraform apply
-# Then repeat Steps 7–10
-```
-
----
-
-## 13. Troubleshooting
+## 11. Troubleshooting
 
 | Error | Cause | Fix |
 |-------|-------|-----|
